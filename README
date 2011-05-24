@@ -1,0 +1,11 @@
+This project incorporates various tools for working with matrix models
+and \beta-ensembles.
+
+AUTHOR: Alexander Popolitov
+
+It is the collection of SAGE scripts, that are intended to be run as
+	sage -python script_name.py
+
+ToDo list:
+	- Loop equations for Gaussian model at arbitrary \beta.
+	- Loop equations for Penner model at arbitrary \beta.
