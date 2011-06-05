@@ -3,13 +3,18 @@ load 'loop_eqn_gen.sage'
 import re
 
 class GaussianSolver(object):
+    def __init__(self):
+        self._not_interesting_list = var('Lambda, beta, z0, y(z0)')
+        self._loop_eqn_gen = LoopEquation()
+    
+    
     def _set_initial_conditions(self):
         '''
         Set initial conditions for iterative procedure, like rho_{1,0,0} and
         its derivatives.
         '''
         # Define basic variables to work with
-        var ('z0 beta')
+        var ('z0 beta T2')
         
         # Define y(x) 'special' function.
         def deriv(self, *args, **kwds):
@@ -23,9 +28,76 @@ class GaussianSolver(object):
         
         # Define zero order 1-point resolvent. Ensure that both n_s_a and
         # n_d_a versions are defined.
-        ans0 = [rho_1_0_0(x) == (x - y(x)) / 2 / beta,
-                rho_0_1_0(x) == (x - y(x)) / 2 / beta]
+        function('rho_1_0_0', nargs=1)
+        function('rho_0_1_0', nargs=1)
         
+        ans0 = [rho_1_0_0(z0) == (T2 * z0 - T2 * y(z0)) / 2 / beta,
+                rho_0_1_0(z1) == (T2 * z1 - T2 * y(z1)) / 2 / beta]
+                
+        self._precompute_derivatives(ans0)
+        
+    
+    def solve(self, max_order):
+        '''
+        @type  max_order: int
+        @param max_order: Maximum order of rho_1_0, that we want to find.
+        '''
+        self._set_initial_conditions()
+        
+        
+        # We should translate apparent order to the real order of equation
+        # by subtracting -2.
+        for cur_ord in xrange(1, max_order + 1):
+            print '*************************************'
+            print '* Starting calculation of new order *'
+            print '*************************************'   
+            
+            ans = self._get_and_solve_eqns(cur_ord, 0)
+            num_iters = max([cur['n_s_a'] + cur['n_d_a'] - 1 for cur in ans[1]])
+            self._precompute_derivatives(ans[0])
+            
+            for n_d_a in xrange(1, num_iters + 1):
+                ans = self._get_and_solve_eqns(cur_ord, n_d_a)
+                self._precompute_derivatives(ans[0])
+    
+    def _z_to_y(self, func_name):
+        '''
+        @type  func_name: string
+        @param func_name: Name of the function, expression we want to simplify.
+        
+        @rtype : callable symbolic expression
+        @return: Simplified version of the function.
+        '''
+        
+        func = globals().get(func_name, None)
+        
+        expr_str = str(func(*func.arguments()))
+        
+        print expr_str
+        
+        pattern = re.compile('z(?P<var_num>\d+)\^(?P<power>\d+)')
+        
+        def repl_func(match):
+            var_num = int(match.group('var_num'))
+            var = eval('z%d' % var_num)
+            power = int(match.group('power'))
+            
+            print var, power
+            
+            if power % 2 == 0:
+                return ('(y(z%d)^2 + 4 * beta * Lambda / T2)^%d' %
+                        (var_num, power / 2))
+            else:
+                return ('(y(z%d)^2 + 4 * beta * Lambda / T2)^%d * z%d' %
+                        (var_num, (power - 1) / 2, var_num))
+                        
+        new_expr_str = pattern.sub(repl_func, expr_str)
+        
+        new_func = symbolic_expression(new_expr_str).function(*func.arguments())
+        
+        globals().update({func_name: new_func})
+        
+        return eval(func_name)
     
     def _precompute_derivatives(self, eqn_list):
         '''
@@ -44,45 +116,55 @@ class GaussianSolver(object):
         '''
         # This will contain instances of functions assigned
         result = []
+        
+        # We will use this extensively,so we proxy it.
+        g = globals()
+        
         for eqn in eqn_list:
             # Instances of functions, assigned in one round.
             local_result = []
             
-            print eqn.lhs(), eqn.lhs().operator()
-            op = eqn.lhs().operator()
-            res_params = self._extract_resolvent_params(str(op))
+            print 'eqn: ', eqn
+            op_str = str(eqn.lhs())
+            res_params = self._extract_resolvent_params(op_str)
             # These will be central objects, so we proxy them.
             n_s_a, n_d_a, order = (res_params['n_s_a'], res_params['n_d_a'],
                                    res_params['order'])
-            ops = eqn.lhs().operands()
+            ops = res_params['var_list']
+            print n_s_a, n_d_a, order, ops
+            print 
             
-            print 'I"m here'
-            print 'I"m here'
+            g.update({'rho_%d_%d_%d' % (n_s_a, n_d_a, order):
+                      eqn.rhs().function(*ops)})
+            self._z_to_y('rho_%d_%d_%d' % (n_s_a, n_d_a, order))
             
-            globals().update({str(eqn.lhs().operator()): eqn.rhs().function(*ops)})           
-            
-            print 'I"m here'
+            # Curing the special case, where we have only one z0
+            if n_s_a == 1:
+                g.update({'rho_%d_%d_%d' % (n_s_a - 1, n_d_a + 1, order):
+                          eval('rho_%d_%d_%d' % (n_s_a, n_d_a, order))})
             
             f = eval('rho_%d_%d_%d' % (n_s_a, n_d_a, order))
 
-            print f(z1, z0)
+            # print f(z0, z1)
             local_result.append(f)
                         
             # If n_s_a == 1, regardless of the circumstances, we can
             # calculate drho_1_k_ and d2rho_1_k_ and drhodiff_0_1+k_
             # This IF block is written in non-object-oriented fashion.
             # Be careful!!!
+            print 'Performing differentiations w.r.t z0'
             if n_s_a == 1:
                 if self._not_exists('drho_%d_%d_%d' % (n_s_a, n_d_a, order)):
                     print 'Calculate drho'
                     # Calculate derivative of the function w.r.t z0
-                    tmp_rhs = diff(eqn.rhs(), ops[0])
-                    print tmp_rhs, tmp_rhs.function(*ops)
+                    tmp_func = eval('rho_%d_%d_%d' % (n_s_a, n_d_a, order))
+                    new_func = self._smart_diff(tmp_func, ops[0])
                     
                     # Define new function
-                    globals().update({'drho_%d_%d_%d' % (n_s_a, n_d_a, order):
-                                      tmp_rhs.function(*ops)})           
-            
+                    g.update({'drho_%d_%d_%d' % (n_s_a, n_d_a, order):
+                              new_func})           
+                    self._z_to_y('drho_%d_%d_%d' % (n_s_a, n_d_a, order))
+                    
                     # Add a link to the instance of newly created function
                     # to our array.
                     tmp_func = eval('drho_%d_%d_%d' % (n_s_a, n_d_a, order))
@@ -92,10 +174,12 @@ class GaussianSolver(object):
                     print 'Calculate d2rho'
                     # Calculate second derivative.
                     tmp_func = eval('drho_%d_%d_%d' % (n_s_a, n_d_a, order))
-                    tmp_rhs = diff(tmp_func(*ops), ops[0])
+                    new_func = self._smart_diff(tmp_func, ops[0])
                     
                     #Define new function.
-                    globals().update({'d2rho_%d_%d_%d' % (n_s_a, n_d_a, order): tmp_rhs.function(*ops)})           
+                    g.update({'d2rho_%d_%d_%d' % (n_s_a, n_d_a, order):
+                              new_func})           
+                    self._z_to_y('d2rho_%d_%d_%d' % (n_s_a, n_d_a, order))
                     
                     # Add a link to the instance of newly created function
                     # to our array.
@@ -103,17 +187,21 @@ class GaussianSolver(object):
                                     (n_s_a, n_d_a, order))
                     local_result.append(tmp_func)
                         
-                if self._not_exists('drhodiff_%d_%d_%d' % (n_s_a - 1, n_d_a + 1,
-                                                           order)):
+                if self._not_exists('drhodiff_%d_%d_%d' %
+                                    (n_s_a - 1, n_d_a + 1, order)):
                     
                     print 'Calculate drhodiff'
-                    globals().update({'drhodiff_%d_%d_%d' % (n_s_a - 1, n_d_a + 1, order):
-                                        eval('drho_%d_%d_%d' % (n_s_a, n_d_a, order))})
+                    g.update({'drhodiff_%d_%d_%d' %
+                              (n_s_a - 1, n_d_a + 1, order):
+                              eval('drho_%d_%d_%d' % (n_s_a, n_d_a, order))})
+                    self._z_to_y('drhodiff_%d_%d_%d' %
+                                 (n_s_a - 1, n_d_a + 1, order))
                     
-                    tmp_func = eval('drhodiff_%d_%d_%d' % (n_s_a - 1, n_d_a + 1, order))
+                    tmp_func = eval('drhodiff_%d_%d_%d' %
+                                    (n_s_a - 1, n_d_a + 1, order))
                     
-                    local_result.append(tmp_func)  
-            '''
+                    local_result.append(tmp_func)
+            
             # If n_d_a > 0, we can calculate
             # drho_i+1_k-1_, d2rho_i+1_k-1_ and drhodiff_i_k_
             
@@ -127,50 +215,367 @@ class GaussianSolver(object):
                     return ops[1]
             
             # We may proceed with calculation.
+            print 'Performing differentiations w.r.t second argument'
             
-            if n_d_a > 1:
+            if n_d_a > 0:
+                # print 'Im here'
                 if self._not_exists('drhodiff_%d_%d_%d' %
                                     (n_s_a, n_d_a, order)):
-                    tmp_func = eval('drhodiff_%d_%d_%d' %
+                    print 'Calculate drhodiff'
+                    
+                    tmp_func = eval('rho_%d_%d_%d' % (n_s_a, n_d_a, order))
+                    new_func = self._smart_diff(tmp_func, correct_op())
+                    
+                    g.update({'drhodiff_%d_%d_%d' % (n_s_a, n_d_a, order):
+                              new_func})
+                    self._z_to_y('drhodiff_%d_%d_%d' % (n_s_a, n_d_a, order))
+                    
+                    local_result.append(new_func)
+                    
+                if self._not_exists('drho_%d_%d_%d' % 
+                                    (n_s_a + 1, n_d_a - 1, order)):
+                    print 'Calculate drho'
+                    
+                    tmp_func = eval('drhodiff_%d_%d_%d' % 
                                     (n_s_a, n_d_a, order))
-                    tmp_rhs = diff(eqn.rhs(), correct_op())
+                    # Variable name is hardcoded. Do something.
+                    # print tmp_func(*ops), {str(correct_op()): z0}
+                    # First we substitute desired argument by a 'wildcard'
+                    # variable 'x'.
+                    var('_x')
+                    pre_limit_expr = tmp_func(*ops).subs({correct_op():
+                                                          z0 + _x})
+                    # Then we take the limit, taking into account, that the
+                    # result could be a number.
+                    print pre_limit_expr
+                    tmp_rhs = symbolic_expression(pre_limit_expr.series(_x, 1).coefficient(_x, 0))
                     
-                    tmp_eqn = tmp_func(*ops) == tmp_rhs
+                    # print 'tmp_rhs', tmp_rhs
+                    # We generate correct argument list for resulting
+                    # expression.
+                    # print ops
+                    if ops[0] == z0:
+                        arg_list = [ops[0]] + ops[2:]
+                    else:
+                        arg_list = [z0] + ops[1:]
                     
-                    local_result.append(tmp_eqn)
-                else:
-                    # Added for combatibility with the following code.
+                    # print arg_list
+                    
+                    new_func = tmp_rhs.function(*arg_list)
+                    
+                    # print new_func
+                    
+                    g.update({'drho_%d_%d_%d' % (n_s_a + 1, n_d_a - 1, order):
+                              new_func})
+                    self._z_to_y('drho_%d_%d_%d' %
+                                 (n_s_a + 1, n_d_a - 1, order))
+                              
+                    local_result.append(new_func)
+                    
+                if self._not_exists('d2rhodiff_%d_%d_%d' % 
+                                    (n_s_a, n_d_a, order)):
+                    print 'Calculate d2rhodiff'
+                    
+                    tmp_func = eval('drhodiff_%d_%d_%d' % 
+                                    (n_s_a, n_d_a, order))
+                    new_func = self._smart_diff(tmp_func, correct_op())
+                    
+                    g.update({'d2rhodiff_%d_%d_%d' % (n_s_a, n_d_a, order):
+                              new_func})
+                    self._z_to_y('d2rhodiff_%d_%d_%d' % (n_s_a, n_d_a, order))
+                    
+                    # We do not append this function, since it does not appear
+                    # in the loop equations.
+                    # local_result.append(tmp_func)
                 
-                    if self._not_exists('drho_%d_%d_%d' % 
-                                        (n_s_a + 1, n_d_a - 1, order)):
-                        tmp_func = eval('drho_%d_%d_%d' % 
-                                        (n_s_a + 1, n_d_a - 1, order))
-                        # Variable name is hardcoded. Do something.
-                        tmp_rhs = limit(local_result[-1].rhs(),
-                                        correct_op() == z0)
-                        if ops[0] == z0:
-                            arg_list = ops
-                        else:
-                            arg_list = [z0] + ops
-                        
-                        tmp_eqn = tmp_func(*arg_list) == tmp_rhs
-                        
-                        local_result.append                
-                        
+                if self._not_exists('d2rho_%d_%d_%d' % 
+                                    (n_s_a + 1, n_d_a - 1, order)):
+                    print 'Calculate d2rho'
                     
-                    if self._not_exists('d2rhodiff_%d_%d_%d' % 
-                                        (n_s_a + 1, n_d_a - 1, order)):
-                        if self._not_exists('d2rhodiff_%d_%d_%d' % 
-                                            (n_s_a, n_d_a, order)):
-               ''' 
+                    tmp_func = eval('d2rhodiff_%d_%d_%d' % 
+                                    (n_s_a, n_d_a, order))
+                    # print tmp_func(*ops)
+                    pre_limit_expr = tmp_func(*ops).subs({correct_op(): z0 + _x})
+                    tmp_rhs = symbolic_expression(pre_limit_expr.series(_x, 1).coefficient(_x, 0))
+                    # print 'tmp_rhs', tmp_rhs
+                    
+                    if ops[0] == z0:
+                        arg_list = [ops[0]] + ops[2:]
+                    else:
+                        arg_list = [z0] + ops[1:]
+                    
+                    new_func = tmp_rhs.function(*arg_list)
+                    
+                    g.update({'d2rho_%d_%d_%d' %
+                              (n_s_a + 1, n_d_a - 1, order):
+                              new_func})
+                    self._z_to_y('d2rho_%d_%d_%d' %
+                                 (n_s_a + 1, n_d_a - 1, order))
+                    
+                    tmp_func = eval('d2rho_%d_%d_%d' %
+                                    (n_s_a + 1, n_d_a - 1, order))
+                    local_result.append(tmp_func)
             
+            print local_result
+            result.extend(local_result)
+        
+        return result
+    
+    def _smart_diff(self, func, arg):
+        '''
+        Fixed differentiation procedure, which differentiates y(x) completely.
+        
+        @type  func: callable symbolic expression
+        @param func: Function, we want to differentiate.
+        
+        @type  arg: variable
+        @param arg: Variable, w.r.t which differentiation should be performed.
+        
+        @rtype : callable symbolic expression
+        @return: The result of differentiation.
+        '''
+        new_expr = str(func.derivative(arg)(*func.arguments()))
+        
+        # We substitute D[0](y)(x) by x/y(x).
+        # Note that this is so only for Gaussian model!
+        find_pattern = re.compile('D\[0\]\(y\)\((?P<y_arg>[a-zA-Z0-9]+)\)')
+        
+        subs_pattern = '(\g<y_arg> / y(\g<y_arg>))'
+        
+        new_corr_expr = find_pattern.sub(subs_pattern, new_expr)
+        
+        result = symbolic_expression(new_corr_expr).function(*func.arguments())
+        return result
+    
+    def _get_and_solve_eqns(self, order, n_d_a):
+        '''
+        Generates closed system of equations and then solves it.
+        
+        @type  order: int
+        @param order: Common order of generated equations.
+        
+        @type  n_d_a: int
+        @param n_d_a: Number of arguments other than z0 in equations. Number
+        of z0's differs from equation to equation, and this is the key of the
+        construction.
+        
+        @rtype : tuple(list of answers,
+        list of names of newly defined functions)
+        @return: 
+        '''
+        
+        # First we generate list of variables and functions, we do not want to
+        # solve for.
+        add_args = [var('z%d' % i) for i in range(1, n_d_a + 1)]
+        add_y_args = [y(var('z%d' % i)) for i in range(1, n_d_a + 1)]
+        local_not_interesting_list = (list(self._not_interesting_list) + 
+                                      add_args +
+                                      add_y_args)
+        print local_not_interesting_list
+        
+        # Here we collect all equations.
+        all_eqns = set([])
+        
+        # First we generate 'first' equation and estimate number of
+        # indeterminates.
+        l_e_g = self._loop_eqn_gen
+        l_e_g.order = -2 - n_d_a + order
+        l_e_g.loop_equation(1, n_d_a)
+        first_eqn = l_e_g.to_connected()
+        all_eqns.add(first_eqn)
+        indet_list = self._get_indets_list(first_eqn)
+        
+        print indet_list
+        
+        # Now we add required number of equations
+        for n_s_a in xrange(2, len(indet_list) + 1):
+            l_e_g.order = -1 - n_s_a - n_d_a + order
+            l_e_g.loop_equation(n_s_a, n_d_a)
+            cur_eqn = l_e_g.to_connected()
+            all_eqns.add(cur_eqn)
+            
+            cur_indet_list = self._get_indets_list(cur_eqn)
+            indet_list.update(cur_indet_list)
+            
+            print indet_list
+        
+        # solve currently cannot solve for functions like f(x), so we should
+        # make a substitution and write f_x instead.
+        
+        print 'Making subs...'
+        
+        s_all_eqns, s_indet_list = self._make_substitution(all_eqns, indet_list)
+            
+        # Now we solve
+        print 'Solving equations...'
+        
+        print list(s_all_eqns), tuple(s_indet_list)
+        
+        all_ans = solve(list(s_all_eqns), *s_indet_list)
+        
+        print 'Got an answer:'
+        if type(all_ans[0]) == list:
+            all_ans = all_ans[0]
+        print all_ans
+        
+        return (all_ans, [self._get_resolvent_params_from_name(str(cur_indet))
+                          for cur_indet in indet_list])
+    
+    def _make_substitution(self, eqns, indets):
+        '''
+        Substitutes all functions rho_i_j_k(z0,.,zk) by rho_i_j_k_z0_..._zk
+        symbolic variables. Needed for solve method to work.
+        
+        @type  eqns: set
+        @param eqns: Equations, that we want to solve.
+        
+        @type  indets: set
+        @param indets: For what we want to solve?
+        
+        @rtype : tuple(new_eqns, new_indets)
+        @return: A tuple, containing equations, where substitutions were made
+        and new indeterminates to solve for.
+        '''
+        
+        new_eqns = set([])
+        new_indets = set([])
+        
+        for cur_eqn in eqns:
+            cur_eqn_str = str(cur_eqn)
+            for cur_indet in indets:
+                ind_data = self._get_resolvent_params_from_name(str(cur_indet))
+                print 'ind_data: ', ind_data
                 
-             
+                func_pattern = 'rho_%d_%d_%d\(%s\)' % (ind_data['n_s_a'],
+                                                       ind_data['n_d_a'],
+                                                       ind_data['order'],
+                                                       ind_data['var_list'])
+                
+                tmp_str = re.sub(',[ ]?', '_', ind_data['var_list'])
+                repl_pattern = 'rho_%d_%d_%d_%s' % (ind_data['n_s_a'],
+                                                    ind_data['n_d_a'],
+                                                    ind_data['order'],
+                                                    tmp_str)
+                
+                print func_pattern, repl_pattern
+                
+                # Define variable with new name
+                var(repl_pattern)
+                new_indets.add(eval(repl_pattern))
+                
+                # Substitute occurencies of a function by new varname in the
+                # equation.
+                cur_eqn_str = re.sub(func_pattern, repl_pattern, cur_eqn_str)
+            print cur_eqn_str
+            new_eqns.add(symbolic_expression(cur_eqn_str))
+                
+        return (new_eqns, new_indets)
+    
+    def _get_resolvent_params_from_name(self, res_name):
+        '''
+        Get parameters like number of arguments and order from string
+        representation of resolvent name
+        
+        @type  res_name: string
+        @param res_name: rho_i_j_k(z0,.,zk)
+        
+        @rtype : dict
+        @return: A dictionary containing following information
+            - 'n_s_a' : Number of z0 arguments
+            - 'n_d_a' : Number of arguments other than z0
+            - 'order' : Which genus contribution is it?
+            - 'var_list' : String representing on that arguments function was
+            called.
+        '''
+        
+        pattern = re.compile('rho_' +
+                             '(?P<n_s_a>\d+)_' +
+                             '(?P<n_d_a>\d+)_' +
+                             '(?P<order>\d+)' +
+                             '\((?P<var_list>[a-z0-9, ]+)\)')
+        
+        m = pattern.match(res_name)
+        
+        result = {'n_s_a': int(m.group('n_s_a')),
+                  'n_d_a': int(m.group('n_d_a')),
+                  'order': int(m.group('order')),
+                  'var_list': m.group('var_list')}
+        
+        return result
+    
+    def _get_indets_list(self, equation):
+        '''
+        Get list of indeterminate resolvents in equation.
+        
+        @type  equation: Expression
+        @param equation: Symbolic expression of equation
+        
+        @rtype : set(function)
+        @return: Set of symbolic functions.
+        '''
+        print 'loop equation: ', equation
+        
+                             
+        equation_str = str(equation)
+        # print equation_str
+        
+        pattern = re.compile('rho_' +
+                             '(?P<n_s_a>\d+)_' +
+                             '(?P<n_d_a>\d+)_' +
+                             '(?P<order>\d+)' +
+                             '\((?P<var_list>[a-z0-9, ]+)\)')
+        
+        match_list = []
+        search_start = 0
+        while True:
+            cur_match = pattern.search(equation_str, search_start)
+            if cur_match == None:
+                break
+            else:
+                match_list.append(cur_match)
+                search_start = cur_match.end()
+                        
+        # print match_list
+        
+        func_list = [globals()['rho_' + cur_p.group('n_s_a') +
+                               '_' + cur_p.group('n_d_a') +
+                               '_' + cur_p.group('order')]
+                     for cur_p in match_list]
+        
+        def _l(x):
+            if type(x) == tuple:
+                return x
+            else:
+                return (x,)
+        
+        arg_list = [_l(var(cur_p.group('var_list'))) for cur_p in match_list]
+        
+        print arg_list
+        
+        indet_list = [cur_func(*cur_arg)
+                      for cur_func, cur_arg in zip(func_list, arg_list)]
+        
+        return set(indet_list)
+                
     def _not_exists(self, func_name):
+        '''
+        Determines, if the expression for the function was already found and
+        assigned. If even symbolic function with this name does not exist, it
+        defines it.
+        
+        @type  func_name: string
+        @param func_name: Name of the function to check.
+        
+        @rtype : bool
+        @return: True if only symbolic function exists, False if some
+        expression is already assigned. 
+        '''
         try:
             tmp = eval(func_name)
         except NameError:
-            return False
+            # print func_name
+            function(func_name)
+            return True
         
         if (tmp == func_name.__repr__()):
             return False
@@ -191,13 +596,23 @@ class GaussianSolver(object):
             - 'order': Which genus contribution it is?
         '''
         
+        print 'func_name: ', func_name
         name_pattern = re.compile('rho_(?P<n_s_a>\d+)_' + 
                                       '(?P<n_d_a>\d+)_' +
-                                      '(?P<order>\d+)')
+                                      '(?P<order>\d+)[_(]'
+                                      '(?P<vars>[a-zA-Z0-9_]+)')
         m = name_pattern.match(func_name)
+        print m
         result = {'n_s_a': int(m.group('n_s_a')),
                   'n_d_a': int(m.group('n_d_a')),
                   'order': int(m.group('order'))}
+                  
+        tmp_var = var(re.sub('_', ',', m.group('vars')))
+        if type(tmp_var) == tuple:
+            pass
+        else:
+            tmp_var = (tmp_var,)
+        result.update({'var_list': list(tmp_var)})
         
         return result
 
@@ -207,13 +622,18 @@ class GaussianSolver(object):
 
 a = GaussianSolver()
 var('z0 z1')
-function('rho_1_1_0', nargs=2)
-function('drho_1_1_0', nargs=2)
-function('d2rho_1_1_0', nargs=2)
-function('drhodiff_0_2_0', nargs=2)
+# function('rho_1_0_1', nargs=1)
+# function('rho_1_1_0', nargs=2)
+# function('drho_1_1_0', nargs=2)
+# function('d2rho_1_1_0', nargs=2)
+# function('drhodiff_0_2_0', nargs=2)
 
-b = [rho_1_1_0(z0, z1) == z0 + z1 ** 2]
+# b = [rho_1_1_0(z0, z1) == z0 + z1 ** 2]
 
-a._precompute_derivatives(b)
+# a._precompute_derivatives(b)
+# a._set_initial_conditions()
+# a._get_and_solve_eqns(-1,0)
+a.solve(3)
+
 
 
