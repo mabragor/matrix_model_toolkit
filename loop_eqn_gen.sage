@@ -41,7 +41,7 @@ class LoopEquation (object):
         
         result = beta * r(num_same_points + 1,
                           num_diff_points)(*var_list)
-        result += (1 - beta) * rd(num_same_points,
+        result += (beta - 1) * rd(num_same_points,
                                   num_diff_points)(*var_list)
         
         return result
@@ -54,8 +54,12 @@ class LoopEquation (object):
         For optimization, rdd and rd functions (partial derivatives w.r.t
         certain z are precomputed)
         
-        @type  num_points: int
-        @param num_points: Number of z's in loop equation.
+        @type  num_same_points: int
+        @param num_same_points: Number of z0's in loop equation.
+        
+        @type  num_diff_points: int
+        @param num_diff_points: Number of points in loop equation, other than
+        z0.
         '''
         
         # Declare all variables.
@@ -118,8 +122,12 @@ class LoopEquation (object):
         '''
         Part of loop equation, coming from differentiation of e^{-V/g}.
         
-        @type  num_points: int
-        @param num_points: Number of z's in loop equation.
+        @type  num_same_points: int
+        @param num_same_points: Number of z0's in loop equation.
+        
+        @type  num_diff_points: int
+        @param num_diff_points: Number of points in loop equation, other than
+        z0.
         '''
         
         # Define all the variables resolvents can depend on.
@@ -128,6 +136,8 @@ class LoopEquation (object):
         # First, we add a dirty hack to handle only Gaussian potential
         # Will implement generic potential later.
         if bool(self.V == x^2):
+            var('T2')
+            
             z = var_list[0]
             r = self._symb_func('r', self.order + 1)
             result = - z * r(num_same_points, num_diff_points)(*var_list)
@@ -141,7 +151,7 @@ class LoopEquation (object):
                     return []
             
             # Correctly handle 1/g^2 term.
-            if num_diff_points == 0:
+            if num_diff_points == 0 and num_same_points == 1:
                 if self.order == -2:
                     multiplier = 1
                 else:
@@ -210,7 +220,7 @@ class LoopEquation (object):
                     
             tmp_func = function(func_name, nargs=num_diff_points + _lambda(),
                                 latex_name=latex_repr)
-        
+            
             return tmp_func
         return wrapper
 
@@ -218,12 +228,12 @@ class LoopEquation (object):
         '''
         Generates list of symbolic variables from list of integers by following
         rule:
-        
-            [i, j, ...] -> [zi, zj, ...].
+            
+        [i, j, ...] -> [zi, zj, ...].
             
         @type  num_list: [int, int, ...]
         @param num_list: List of integers
-        @rtype : [Expression, Expression, ...]
+        @rtype: [Expression, Expression, ...]
         @return: List of (newly declared, if necessary) symbolic variables.
         '''
         
@@ -248,7 +258,7 @@ class LoopEquation (object):
         equation. They are also different from 'z0', quantitiy of which is
         specified by 'num_same_points' parameter. 
         
-        @rtype : Expression
+        @rtype: Expression
         @return: Loop equation in terms of disconnected resolvents. To get to
         the view in terms of connected ones, use 'to_connected' method.
         '''
@@ -268,7 +278,7 @@ class LoopEquation (object):
         @param equation: Loop equation to rewrite. If not specified,
         self.equation attribute is used.
         
-        @rtype : Expression
+        @rtype: Expression
         @return: Loop equation in terms of connected resolvents.
         '''
 
@@ -314,7 +324,7 @@ class LoopEquation (object):
         @param num_groups: Number of groups (equivalent glasses)
         to divide into.
         
-        @rtype : set
+        @rtype: set
         @return: Set of frozensets of tuples of numbers, where:
             - tuple describes ID numbers of beads in the given glass;
             - frozenset describes any given partition of beads;
@@ -394,8 +404,21 @@ class LoopEquation (object):
         Already known connected resolvents are substituted by their value,
         while not known are left unevaluated.
         
+        @type  base_func_name: string
+        @param base_func_name: Name to use for all functions, which do not
+        happen to be called upon argument number 'magic_number'.
+        
+        @type  mod_func_name: string
+        @param mod_func_name: Name to use for the function, that is called
+        upon argument number 'magic_number'.
+        
+        @type  magic_number: int
+        @param magic_number: Number of argument, that alteres function name.
+        Usually, this means, that differentiation is performed with respect to
+        it. This should be manifested in change of function name.
+        
         @type  num_same_args: int
-        @param num_same_args: Number of z0 arguments in the resolvent
+        @param num_same_args: Number of z0 arguments in the resolvent.
         
         @type  num_diff_args: int
         @param num_diff_args: Number of arguments, different from z0 and
@@ -407,7 +430,7 @@ class LoopEquation (object):
         from that, str_order is the string representation of the absolute
         value of order.
         
-        @rtype : Expression
+        @rtype: Expression
         @return: Symbolic expression, that expresses disconnected resolvent in
         terms of connected ones.
         '''
@@ -502,7 +525,7 @@ class LoopEquation (object):
             @param arg_num: Argument number, if we write arguments in 'flat 
             form' - 'z0, z0, z0, z1,., zn'
             
-            @rtype : Variable
+            @rtype: Variable
             @return: Correct argument, taking into account multiplicity of
             the first argument.
             '''
@@ -553,7 +576,7 @@ class LoopEquation (object):
         @param flat_list: List of arguments in the 'flat' form, that is
         [z0, z0, z0,., z1, z2, ...]
         
-        @rtype : dict
+        @rtype: dict
         @return: A dictionary, containing following information
             - 'n_s_a': Number of z0's in arglist;
             - 'n_d_a': Number of all other arguments;
@@ -596,12 +619,12 @@ class LoopEquation (object):
         @type  ord_mask: list(int)
         @param ord_mask: What are the orders of connected resolvents?
         
-        @rtype : list(functions)
+        @rtype: list(functions)
         @return: List of functions, ready to be called on corresponding
         argument lists. If functions were not evaluated before, they are only
         symbolic names, otherwise, expressions would be obtained upon calling.
         
-        @important: Any correctness checks are OMITTED!!! Use at your own risk.
+        @attention: Any correctness checks are OMITTED!!! Use at your own risk.
         '''
         
         funcs = []
@@ -643,7 +666,7 @@ class LoopEquation (object):
         @type  num_groups: int
         @param num_groups: How many resolvents there are?
         
-        @rtype : list
+        @rtype: list
         @return: All possible distributions (each order can be greater or
         equal than zero) as list of lists.
         '''

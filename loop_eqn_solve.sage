@@ -7,6 +7,22 @@ class GaussianSolver(object):
         self._not_interesting_list = var('Lambda, beta, z0, y(z0)')
         self._loop_eqn_gen = LoopEquation()
     
+    def debug(self, message):
+        '''
+        Prints out a message surrounded by the box of asterisks, for it to be
+        noticeable.
+        
+        @type message: string
+        @param message: The message we want to print, usually to know, where we
+        are.
+        '''
+        
+        m_len = len(message)
+        
+        tmp_str = reduce(lambda x, y: x + y, ['*' for i in xrange(m_len + 4)])
+        print tmp_str
+        print '* ' + message + ' *'
+        print tmp_str
     
     def _set_initial_conditions(self):
         '''
@@ -31,16 +47,21 @@ class GaussianSolver(object):
         function('rho_1_0_0', nargs=1)
         function('rho_0_1_0', nargs=1)
         
-        ans0 = [rho_1_0_0(z0) == (T2 * z0 - T2 * y(z0)) / 2 / beta,
-                rho_0_1_0(z1) == (T2 * z1 - T2 * y(z1)) / 2 / beta]
+        ans0 = [rho_1_0_0(z0) == (z0 - y(z0)) / 2 / beta,
+                rho_0_1_0(z1) == (z1 - y(z1)) / 2 / beta]
                 
         self._precompute_derivatives(ans0)
         
     
-    def solve(self, max_order):
+    def solve(self, max_order, max_diff_points=None):
         '''
         @type  max_order: int
         @param max_order: Maximum order of rho_1_0, that we want to find.
+        
+        @type  max_diff_points: int
+        @param max_diff_points: At the highest order, we evaluate resolvents
+        with only max_diff_points number of non-coincident points.
+        Defaults to None.
         '''
         self._set_initial_conditions()
         
@@ -54,26 +75,42 @@ class GaussianSolver(object):
             
             ans = self._get_and_solve_eqns(cur_ord, 0)
             num_iters = max([cur['n_s_a'] + cur['n_d_a'] - 1 for cur in ans[1]])
+            if cur_ord == max_order and max_diff_points != None:
+                num_iters = min(num_iters, max_diff_points - 1)
             self._precompute_derivatives(ans[0])
             
             for n_d_a in xrange(1, num_iters + 1):
                 ans = self._get_and_solve_eqns(cur_ord, n_d_a)
                 self._precompute_derivatives(ans[0])
     
-    def _z_to_y(self, func_name):
+    def _z_to_y(self, foo):
         '''
-        @type  func_name: string
-        @param func_name: Name of the function, expression we want to simplify.
+        Rewrites as much as possible in terms of y(z)'s instead of z's.
         
-        @rtype : callable symbolic expression
-        @return: Simplified version of the function.
+        Accepts arguments of different types and behavior is different.
         '''
         
-        func = globals().get(func_name, None)
+        if type(foo) == str:
+            return self._z_to_y_func(foo)
+        elif type(foo) == sage.symbolic.expression.Expression:
+            return self._z_to_y_expr(foo)
+        else:
+            print "THIS JUST SHOULD NOT HAPPEN!"
+            raise Exception
+            
+    def _z_to_y_str(self, expr_str):
+        '''
+        Rewrites as much as possible in terms of y(z)'s instead of z's.
         
-        expr_str = str(func(*func.arguments()))
+        Accepts formula in string format. A low-level function in a sense that
+        it does not take into account necessity to hold form of denominators.
         
-        print expr_str
+        @type  expr_str: string
+        @param expr_str: EXAMPLE: "z^2 - 4 * beta * Lambda"
+        
+        @rtype : string
+        @return: Simplified expression, also in form of a string.
+        '''
         
         pattern = re.compile('z(?P<var_num>\d+)\^(?P<power>\d+)')
         
@@ -82,18 +119,105 @@ class GaussianSolver(object):
             var = eval('z%d' % var_num)
             power = int(match.group('power'))
             
-            print var, power
+            # print var, power
             
             if power % 2 == 0:
-                return ('(y(z%d)^2 + 4 * beta * Lambda / T2)^%d' %
+                return ('(y(z%d)^2 + 4 * beta * Lambda)^%d' %
                         (var_num, power / 2))
             else:
-                return ('(y(z%d)^2 + 4 * beta * Lambda / T2)^%d * z%d' %
+                return ('(y(z%d)^2 + 4 * beta * Lambda)^%d * z%d' %
                         (var_num, (power - 1) / 2, var_num))
                         
         new_expr_str = pattern.sub(repl_func, expr_str)
         
-        new_func = symbolic_expression(new_expr_str).function(*func.arguments())
+        return new_expr_str 
+   
+    def _z_to_y_expr(self, expr):
+        '''
+        @type  expr: symbolic expression
+        @param expr: symbolic expression, we want to have as much y's and as
+        little z's, as possible.
+        
+        @rtype: symbolic expression
+        @return: Simplified version of the expression
+        '''
+        self.debug('Starting simplification procedure...')
+        
+        # First we isolate the denominator
+        expr_den = expr.denominator()
+        expr_num = expr.numerator().expand()
+        
+        print 'Denomiantor: ', expr_den
+        print 'Numberator: ', expr_num
+        
+        expr_str = str(expr_num)
+        new_expr_str = self._z_to_y_str(expr_str)
+        
+        new_expr = symbolic_expression(new_expr_str)
+        new_expr = new_expr.simplify_full()
+        
+        # We plug the denominator back.
+        new_expr = new_expr / expr_den
+        
+        return new_expr
+    
+    def _y_to_rads_str(self, expr_str):
+        '''
+        Converts all y's in the string form of expression into their
+        exact radical values.
+        
+        @attention: This procedure is expresimental, just to test if bruteforce
+        simplification will work well.
+        '''
+        
+        pattern = re.compile('y\(z(?P<var_num>\d+)\)')
+        
+        def repl_func(match):
+            var_num = int(match.group('var_num'))
+            var = eval('z%d' % var_num)
+            power = int(match.group('power'))
+            
+            return 'sqrt(z%d^2 - 4 * beta * Lambda)' %  var_num
+                        
+        new_expr_str = pattern.sub(repl_func, expr_str)
+        
+        return new_expr_str
+    
+    def _rads_to_y_str(self, expr_str):
+        '''
+        Rewrites explicit radicals in the compact form of y's.
+        
+        Replacement proceeds 
+        '''
+        
+        pattern = re.compile('y\(z(?P<var_num>\d+)\)')
+        
+        def repl_func(match):
+            var_num = int(match.group('var_num'))
+            var = eval('z%d' % var_num)
+            power = int(match.group('power'))
+            
+            return 'sqrt(z%d^2 - 4 * beta * Lambda)' %  var_num
+                        
+        new_expr_str = pattern.sub(repl_func, expr_str)
+        
+        return new_expr_str
+    
+    def _z_to_y_func(self, func_name):
+        '''
+        @type  func_name: string
+        @param func_name: Name of the function, expression we want to simplify.
+        
+        @rtype : callable symbolic expression
+        @return: Simplified version of the function.
+        '''
+        func = globals().get(func_name, None)
+        
+        expr = func(*func.arguments())
+        
+        new_expr = self._z_to_y_expr(expr)
+        
+        new_func = new_expr.function(*func.arguments())
         
         globals().update({func_name: new_func})
         
@@ -250,6 +374,9 @@ class GaussianSolver(object):
                     print pre_limit_expr
                     tmp_rhs = symbolic_expression(pre_limit_expr.series(_x, 1).coefficient(_x, 0))
                     
+                    self.debug('After taking the limit this equals: ')
+                    print tmp_rhs
+                    
                     # print 'tmp_rhs', tmp_rhs
                     # We generate correct argument list for resulting
                     # expression.
@@ -266,9 +393,11 @@ class GaussianSolver(object):
                     # print new_func
                     
                     g.update({'drho_%d_%d_%d' % (n_s_a + 1, n_d_a - 1, order):
-                              new_func})
+                              new_func})    
                     self._z_to_y('drho_%d_%d_%d' %
                                  (n_s_a + 1, n_d_a - 1, order))
+                    
+                    self.debug('Passed calculation of drho')
                               
                     local_result.append(new_func)
                     
@@ -388,7 +517,8 @@ class GaussianSolver(object):
         print indet_list
         
         # Now we add required number of equations
-        for n_s_a in xrange(2, len(indet_list) + 1):
+        n_s_a = 2
+        while n_s_a < len(indet_list) + 1:
             l_e_g.order = -1 - n_s_a - n_d_a + order
             l_e_g.loop_equation(n_s_a, n_d_a)
             cur_eqn = l_e_g.to_connected()
@@ -397,6 +527,7 @@ class GaussianSolver(object):
             cur_indet_list = self._get_indets_list(cur_eqn)
             indet_list.update(cur_indet_list)
             
+            n_s_a += 1
             print indet_list
         
         # solve currently cannot solve for functions like f(x), so we should
@@ -405,7 +536,10 @@ class GaussianSolver(object):
         print 'Making subs...'
         
         s_all_eqns, s_indet_list = self._make_substitution(all_eqns, indet_list)
-            
+        
+        # All equations should be linear, and we make use of it here
+        s_all_eqns = self._simplify_eqn_form(s_all_eqns, s_indet_list)
+        
         # Now we solve
         print 'Solving equations...'
         
@@ -420,6 +554,52 @@ class GaussianSolver(object):
         
         return (all_ans, [self._get_resolvent_params_from_name(str(cur_indet))
                           for cur_indet in indet_list])
+    
+    def _simplify_eqn_form(self, eqns, indets):
+        '''
+        Custom made simplification procedure for equations.
+        
+        Exploits the fact that system is linear at each order of perturbation
+        theory.
+        
+        @type  eqns: set
+        @param eqns: Set of equations.
+        
+        @type  indets: set
+        @param indets: Set of indeterminates, we want to solve for.
+        
+        @rtype : set
+        @return: Set of more-or-less simplified equations.
+        '''
+        
+        simpl_eqns = set([])
+        for eqn in eqns:
+            simpl_eqn = 0
+            for indet in indets:
+                coeff = eqn.collect(indet).coefficient(indet, 1)
+                print coeff
+                coeff = coeff.simplify()
+                
+                simpl_eqn += coeff * indet
+                eqn -= coeff * indet
+            
+            # First we simplify just in case
+            eqn = eqn.full_simplify().factor()
+            
+            eqn = self._z_to_y(eqn)
+            
+            eqn = eqn.partial_fraction(y(z0))
+            print '*******************************************'
+            print '* Simplified form of free coefficient is: *'
+            print '*******************************************'
+            print eqn
+            
+            simpl_eqn += eqn
+            
+            simpl_eqns.add(simpl_eqn)
+        
+        return simpl_eqns
+        
     
     def _make_substitution(self, eqns, indets):
         '''
@@ -633,7 +813,7 @@ var('z0 z1')
 # a._precompute_derivatives(b)
 # a._set_initial_conditions()
 # a._get_and_solve_eqns(-1,0)
-a.solve(3)
+a.solve(3,0)
 
 
 
